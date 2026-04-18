@@ -1,66 +1,77 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../db");
+const { shards } = require("../db");
 const auth = require("../middleware/auth");
 const allowRoles = require("../middleware/role");
 const logAction = require("../utils/logger");
 
-//  ADMIN ONLY: VIEW LOGS
+// ADMIN ONLY: VIEW LOGS
 router.get("/logs", auth, allowRoles("Admin"), (req, res) => {
 
-  //  Log request attempt
+  // log request attempt
   logAction(
     "VIEW_AUDIT_LOGS_REQUEST",
     `admin=${req.user.id}`
   );
 
-  db.query(`
-    SELECT 
-      al.LogID,
-      al.ActionType,
-      al.TableName,
-      al.RecordID,
-      al.ActionTime,
+  let results = [];
+  let completed = 0;
 
-      m.Name AS AdminName,
+  // 🔥 query ALL shards and merge
+  shards.forEach((db) => {
+    db.query(`
+      SELECT 
+        al.LogID,
+        al.ActionType,
+        al.TableName,
+        al.RecordID,
+        al.ActionTime,
 
-      r.Name AS RequesterName,
-      c.CourseName
+        m.Name AS AdminName,
 
-    FROM audit_log al
+        r.Name AS RequesterName,
+        c.CourseName
 
-    JOIN member m ON al.PerformedBy = m.MemberID
+      FROM audit_log al
 
-    LEFT JOIN attendance_request ar 
-      ON al.RecordID = ar.RequestID 
-      AND al.TableName = 'Attendance_request'
+      JOIN member m ON al.PerformedBy = m.MemberID
 
-    LEFT JOIN member r 
-      ON ar.StudentID = r.MemberID
+      LEFT JOIN attendance_request ar 
+        ON al.RecordID = ar.RequestID 
+        AND al.TableName = 'Attendance_request'
 
-    LEFT JOIN attendance a 
-      ON ar.AttendanceID = a.AttendanceID
+      LEFT JOIN member r 
+        ON ar.StudentID = r.MemberID
 
-    LEFT JOIN course c 
-      ON a.CourseID = c.CourseID
+      LEFT JOIN attendance a 
+        ON ar.AttendanceID = a.AttendanceID
 
-    ORDER BY al.LogID DESC
-  `,
-  (err, result) => {
-    if (err) {
-      logAction(
-        "VIEW_AUDIT_LOGS_ERROR",
-        `admin=${req.user.id}`
-      );
-      return res.status(500).send(err);
-    }
+      LEFT JOIN course c 
+        ON a.CourseID = c.CourseID
 
-    logAction(
-      "VIEW_AUDIT_LOGS_SUCCESS",
-      `admin=${req.user.id} records=${result.length}`
-    );
+      ORDER BY al.LogID DESC
+    `,
+    (err, data) => {
 
-    res.json(result);
+      if (!err && data) {
+        results.push(...data);
+      }
+
+      completed++;
+
+      if (completed === shards.length) {
+
+        // 🔥 optional: sort merged results
+        results.sort((a, b) => b.LogID - a.LogID);
+
+        logAction(
+          "VIEW_AUDIT_LOGS_SUCCESS",
+          `admin=${req.user.id} records=${results.length}`
+        );
+
+        res.json(results);
+      }
+    });
   });
 
 });

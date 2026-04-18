@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../db");
+const { getDB, shards } = require("../db");
 const auth = require("../middleware/auth");
 const logAction = require("../utils/logger");
 
@@ -8,13 +8,17 @@ const logAction = require("../utils/logger");
 router.get("/attendance/:courseId", auth, (req, res) => {
   const courseId = req.params.courseId;
 
-  // Log request start
   logAction(
     "VIEW_ATTENDANCE_REQUEST",
     `user=${req.user.id} role=${req.user.role} course=${courseId}`
   );
 
   if (req.user.role === "Student") {
+
+    const shardId = req.user.id % 3;
+    console.log("🔹 LOOKUP → StudentID:", req.user.id, "| Shard:", shardId);
+
+    const db = getDB(req.user.id);
 
     db.query(`
       SELECT 
@@ -56,52 +60,68 @@ router.get("/attendance/:courseId", auth, (req, res) => {
 
   } else {
 
-    db.query(`
-      SELECT 
-        a.*, 
-        l.SessionDate, 
-        l.StartTime, 
-        l.EndTime, 
-        m.Name
+    console.log("🔸 ADMIN → Querying ALL shards");
 
-      FROM attendance a
-      JOIN lecturelog l 
-        ON a.SessionID = l.SessionID
+    let results = [];
+    let completed = 0;
 
-      JOIN member m 
-        ON a.StudentID = m.MemberID
+    shards.forEach((db, i) => {
+      console.log("   ↳ Querying shard:", i);
 
-      WHERE a.CourseID = ?
-    `,
-    [courseId],
-    (err, result) => {
-      if (err) {
-        logAction(
-          "VIEW_ATTENDANCE_ERROR",
-          `user=${req.user.id} course=${courseId}`
-        );
-        return res.status(500).send(err);
-      }
+      db.query(`
+        SELECT 
+          a.*, 
+          l.SessionDate, 
+          l.StartTime, 
+          l.EndTime, 
+          m.Name
 
-      logAction(
-        "VIEW_ATTENDANCE_SUCCESS",
-        `user=${req.user.id} role=${req.user.role} course=${courseId}`
-      );
+        FROM attendance a
+        JOIN lecturelog l 
+          ON a.SessionID = l.SessionID
 
-      res.json(result);
+        JOIN member m 
+          ON a.StudentID = m.MemberID
+
+        WHERE a.CourseID = ?
+      `,
+      [courseId],
+      (err, data) => {
+
+        if (!err && data) {
+          results.push(...data);
+        }
+
+        completed++;
+
+        if (completed === shards.length) {
+
+          logAction(
+            "VIEW_ATTENDANCE_SUCCESS",
+            `user=${req.user.id} role=${req.user.role} course=${courseId}`
+          );
+
+          res.json(results);
+        }
+      });
     });
 
   }
 });
 
 
-//  GET courses
+// GET courses
 router.get("/courses", auth, (req, res) => {
 
   logAction(
     "VIEW_COURSES_REQUEST",
     `user=${req.user.id} role=${req.user.role}`
   );
+
+  const shardId = req.user.id % 3;
+  console.log("🔹 LOOKUP → StudentID:", req.user.id, "| Shard:", shardId);
+
+  const db = getDB(req.user.id);
 
   db.query(`
     SELECT c.CourseID, c.CourseName
